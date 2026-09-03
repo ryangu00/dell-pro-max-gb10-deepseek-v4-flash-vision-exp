@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""dsv4f-thinking-proxy - DSV4F Vision-Exp 双机 thinking 分档(2026-09-01,派生自 thinking_proxy.py/ADR-0101)。
-一个 vLLM 双机引擎(head :8899)+两个薄代理端口,固定注入 chat_template_kwargs:
-  :8901 = off (thinking=false)  - fleet 主力快档
-  :8902 = on  (thinking=true)   - 质量档(agentic 语义/日期计算,实测 6-13x 时间)
-端口语义强制覆盖调用方;/v1/chat/completions 之外全透传。纯 stdlib,SSE 透传。"""
+"""dsv4f-thinking-proxy - DSV4F Vision-Exp two-node thinking tiering (2026-09-01, derived from thinking_proxy.py/ADR-0101).
+One two-node vLLM engine (head :8899) + two thin proxy ports with fixed chat_template_kwargs injection:
+  :8901 = off (thinking=false)  - fleet workhorse fast tier
+  :8902 = on  (thinking=true)   - quality tier (agentic semantics/date arithmetic; measured 6-13x time)
+Port semantics forcibly override the caller; everything outside /v1/chat/completions passes through untouched. Pure stdlib, SSE pass-through."""
 import asyncio, json, sys
 
 UPSTREAM_HOST, UPSTREAM_PORT = "127.0.0.1", 8899
@@ -13,7 +13,7 @@ PORTS = {
 }
 
 async def read_chunked(reader, buf):
-    """RFC7230 chunked body 解码;返回完整 body 字节(trailer 丢弃)。"""
+    """Decode an RFC7230 chunked body; return the full body bytes (trailer discarded)."""
     async def fill(cond):
         nonlocal buf
         while not cond(buf):
@@ -27,7 +27,7 @@ async def read_chunked(reader, buf):
         line, _, buf = buf.partition(b"\r\n")
         size = int(line.split(b";")[0].strip() or b"0", 16)
         if size == 0:
-            while True:  # trailer 直到空行
+            while True:  # trailer until blank line
                 await fill(lambda b: b"\r\n" in b)
                 line, _, buf = buf.partition(b"\r\n")
                 if not line:
@@ -54,7 +54,7 @@ async def pump(reader, writer):
 
 async def handle(client_r, client_w, kwargs):
     try:
-        # 读请求头
+        # Read request headers
         head = b""
         while b"\r\n\r\n" not in head:
             b_ = await client_r.read(65536)
@@ -70,14 +70,14 @@ async def handle(client_r, client_w, kwargs):
             k, _, v = ln.decode("latin1").partition(":")
             headers[k.strip().lower()] = v.strip()
         if "chunked" in headers.get("transfer-encoding", "").lower():
-            body = await read_chunked(client_r, body_start)  # 解块重算 content-length(对抗审 #6)
+            body = await read_chunked(client_r, body_start)  # de-chunk and recompute content-length (adversarial review #6)
         else:
             clen = int(headers.get("content-length", "0"))
             body = body_start
             while len(body) < clen:
                 chunk = await client_r.read(65536)
                 if not chunk:
-                    return  # client 半途断开:EOF 不退会死循环烧 CPU
+                    return  # client disconnected mid-body: not bailing on EOF spins forever and burns CPU
                 body += chunk
 
         inject = method == "POST" and path.startswith("/v1/chat/completions")
@@ -85,11 +85,11 @@ async def handle(client_r, client_w, kwargs):
             try:
                 obj = json.loads(body.decode("utf-8"))
                 ck = obj.get("chat_template_kwargs") or {}
-                ck.update(kwargs)  # 端口档位强制覆盖
+                ck.update(kwargs)  # port tier forcibly overrides
                 obj["chat_template_kwargs"] = ck
                 body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
             except Exception:
-                pass  # 非 JSON 原样透传
+                pass  # non-JSON passes through untouched
 
         up_r, up_w = await asyncio.open_connection(UPSTREAM_HOST, UPSTREAM_PORT)
         out = [f"{method} {path} HTTP/1.1"]
@@ -102,7 +102,7 @@ async def handle(client_r, client_w, kwargs):
         out.append(f"content-length: {len(body)}")
         up_w.write(("\r\n".join(out) + "\r\n\r\n").encode("latin1") + body)
         await up_w.drain()
-        await pump(up_r, client_w)  # 响应流式回传(SSE 原样)
+        await pump(up_r, client_w)  # stream the response back (SSE as-is)
         up_w.close()
     except Exception as e:
         try:
