@@ -90,3 +90,16 @@ Callers pick a tier by port — zero client changes. Measured cost: thinking on 
 
 ---
 *RyanAI Lab · All numbers measured on our resident environment. Updated 2026-09. Issues welcome.*
+
+## Update 2026-09-17 — we no longer run this exact stack in production
+
+Everything above still reproduces as written (image `ghcr.io/anemll/dspark-vllm-gx10:0.1.1`, weights pinned). But after two months two things surfaced that we could not fix inside this image:
+
+1. **Any image request could hang the engine.** A single 1024×768 PNG produced an NCCL collective timeout on rank 1; rank 0 stayed up, `/health` kept returning 200, and every request timed out until a full restart. Text-only workloads never see this.
+2. **The prefix-cache fix merged upstream on 2026-09-03 was never released** into a new image, so long sessions always paid a cold prefill.
+
+We ran a three-way A/B against two community stacks with a frozen decision rule and moved production. The harness, the numbers (decode / cold prefill / 6-stream / `tool-eval-bench` hardmode / vision OCR / KV pool, four columns including the pre-TP2 two-node layout) and the twelve pitfalls are in a separate repo:
+
+**→ [dell-pro-max-gb10-vllm-stack-ab](https://github.com/ryangu00/dell-pro-max-gb10-vllm-stack-ab)**
+
+What this repo is still good for: the fastest-booting, largest-KV-pool (≈2.33 M tokens) stack of the three for **text-only** DeepSeek-V4-Flash serving on a GB10 pair, and the only one of the three that runs without any patch. If you do not send images and do not depend on prefix-cache hits, it remains a valid choice.
