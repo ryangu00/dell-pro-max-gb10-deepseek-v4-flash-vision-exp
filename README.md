@@ -103,3 +103,34 @@ We ran a three-way A/B against two community stacks with a frozen decision rule 
 **→ [dell-pro-max-gb10-vllm-stack-ab](https://github.com/ryangu00/dell-pro-max-gb10-vllm-stack-ab)**
 
 What this repo is still good for: the fastest-booting, largest-KV-pool (≈2.33 M tokens) stack of the three for **text-only** DeepSeek-V4-Flash serving on a GB10 pair, and the only one of the three that runs without any patch. If you do not send images and do not depend on prefix-cache hits, it remains a valid choice.
+
+## Update 2026-09-20: this stack is no longer our production
+
+On 2026-09-20 we moved production off DeepSeek V4 Flash Vision-Exp (two-node vLLM TP2) onto **Qwen3.8-Flash-Next** on the same two Dell Pro Max with GB10 nodes. New engine, as run: weights `local-inference-lab/Qwen3.8-Flash-Next-NVFP4` (QAD mixed-precision NVFP4), the community two-node cluster recipe (vLLM b12x MoE backend, TP2 over RoCE), `--max-model-len 1000000` via static YaRN factor 4, fp8 KV cache, MTP-4 with `--no-async-scheduling`, `--tool-call-parser qwen3_coder --reasoning-parser qwen3`, thinking mode on (reasoning effort `low` on the fast tier, `medium` on the quality tier). The new engine also serves the old model name as an alias, so **no client configuration changed** (endpoint and model name are the same; the only behavioural difference is that responses now carry `reasoning_content`).
+
+The 95K "worker kill" recorded above for Flash-Next was a property of the August recipe, not of the model: on the cluster recipe the 200K tier of our eval bank ran two full rounds with zero crashes, and at 1M the needle probe recovered the planted content 9/9 at each of 400K, 700K and 950K (three 950K cold prefills of 856-860 s, all correct).
+
+**Why.** With both models in thinking mode on our private 11-category eval bank (questions not published; the full 11-row table, gates and method are in the agentic-thinking cookbook linked below), Qwen3.8-Flash-Next passed all 11 category gates:
+
+| Metric (same bank, same day, thinking mode on both sides) | Qwen3.8-Flash-Next | DeepSeek V4 Flash Vision-Exp |
+|---|---|---|
+| own-mean (mean of the 8 non-pack categories, percentage points) | 87.9 (+3.8) | 84.1 |
+| c8-judgment | 98.3 | 81.7 |
+| c9-long-coding | 100.0 | 82.3 |
+| c7-agentic-if (median of 5 runs: 90.0 / 93.3 / 88.3 / 91.7 / 91.7) | 91.7 | 90.0 |
+| single-stream decode, 400-token prose completion (tok/s) | 51.2 | 32.8 |
+| six-stream aggregate (tok/s) | 87.6 | 82.8 |
+| KV pool at `--max-model-len` 1M (tokens) | 3,455,574 | 1,492,180 |
+
+The 1,492,180-token KV pool is the DeepSeek stack as it ran after the 2026-09-17 stack switch described in the previous update; the 2.33M figure earlier in this README belongs to the older image.
+
+In **non-thinking** mode (both models greedy, same bank, three-run median) Qwen3.8-Flash-Next had lost the agentic-if category, 81.7 vs 95.0, which is why the switch waited for the thinking-mode rerun rather than shipping on the non-thinking numbers.
+
+Rollback is a single mode switch in our (unpublished) switch script; the launch command for this stack is the one documented in this README, so the fallback stays reproducible. This stack remains a valid choice for **text-only** workloads that do not rely on prefix-cache hits.
+
+**Details in four new cookbooks** (repos under github.com/ryangu00/):
+
+- `dell-pro-max-gb10-qwen3.8-flash-next-1m-context` — YaRN factor 4 to 1M: recipe, KV pool, needle recall, cold-prefill timings
+- `dell-pro-max-gb10-vllm-mtp-async-runaway` — the MTP-4 × async-scheduling runaway loop, its single-variable isolation (3/120 → 0/120) and the `--no-async-scheduling` fix
+- `dell-pro-max-gb10-qwen3.8-flash-next-agentic-thinking` — why the agentic-if gap was a measurement setting, with the full thinking-mode table
+- `dell-pro-max-gb10-qwen3.8-flash-next-engine-ab` — engine-form A/B: native 262K vs YaRN 2 vs YaRN 4 (1M) vs KV bf16 vs MTP off, each a single-variable change
